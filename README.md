@@ -1,5 +1,12 @@
 # fastapi_line_20230701
+## LINE developer × FAST API 連携 Google Cloud Run でのサーバー動作
 
+・main.py 機能<br>
+　LINE連携<br>
+  →　チャットのオウム返し<br>
+　→　バーコード画像読み取り・商品検索・商品情報FB<br>
+
+---------------------------------------------------------------
 ・Docker 参考リンク:Dockerで"Hello world"
 
 
