@@ -4,10 +4,13 @@
 ・main.py 機能<br>
 　LINE連携<br>
   →　チャットのオウム返し<br>
-　→　バーコード画像読み取り・商品検索・商品情報FB<br>
+  →　バーコード画像読み取り・商品検索・商品情報FB<br>
 
 ---------------------------------------------------------------
-・Docker 参考リンク:Dockerで"Hello world"
+以下はDockerとGoogleCloudRunのデプロイ方法のやり方<br>
+
+Docker参考<br>
+・Docker 参考リンク:Dockerで"Hello world"<br>
 
 
   https://www.utakata.work/entry/docker-python-tutorial/1
