@@ -1,0 +1,6 @@
+fastapi==0.95.0
+line-bot-sdk==2.4.2
+pydantic
+pyzbar==0.1.9
+uvicorn
+opencv-contrib-python==4.6.0.66
