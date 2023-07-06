@@ -2,27 +2,39 @@ import cv2
 import os
 import json
 import tempfile
-import uvicorn
-import urllib.request
-from typing import List
-from urllib.error import HTTPError
 from fastapi import FastAPI, Depends, Request, HTTPException
 from pydantic import BaseModel
+from typing import List
 from linebot import (LineBotApi, WebhookHandler, WebhookParser)
 from linebot.models import (MessageEvent, ImageMessage, TextMessage, TextSendMessage,)
 from linebot.exceptions import (InvalidSignatureError)
 from pyzbar import pyzbar
+import urllib.request
+from urllib.error import HTTPError
 
+#商品名を整形するために必要なライブラリ
+import openai
+import requests
+
+#スプレッドシートを扱うために必要なライブラリ
+import gspread
+from google.oauth2.service_account import Credentials
 
 # FastAPIをインスタンス化
 app = FastAPI()
+#初期化
+product_info = None
 
 # LINE Botのシークレットとアクセストークン
-CHANNEL_SECRET = "LIEN developerのシークレット"
-CHANNEL_ACCESS_TOKEN = "LIEN developerのアクセストークン"
+# LINE Bot APIとWebhookHandlerをインスタンス化します。
+# LINE Bot APIは、LINEのメッセージを送受信するためのAPIを提供します。
+# WebhookHandlerは、Webhookからのイベントを処理するためのクラスです。
+CHANNEL_SECRET = ""
+CHANNEL_ACCESS_TOKEN = ""
 # Yahoo Shopping APIのクライアントID
-client_id = "YahooAPIのID"
-
+client_id = ""
+#openAI API key
+openai.api_key = ""
 # LINE Bot APIを使うためのクライアントのインスタンス化
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
@@ -50,7 +62,6 @@ def read_barcode(image_path):
         return barcode_data
     # バーコードが見つからない場合はNoneを返す
     return None
-
 
 # バーコード番号から商品を検索する関数
 def barcode_search(code):
@@ -85,6 +96,135 @@ def barcode_search(code):
     else:
         err_msg = "バーコードから商品が見つかりませんでした。"
         return err_msg
+    
+#############################################################
+# バーコードの検索結果から商品名とメーカー名を推定
+#############################################################
+def list_to_name(info):
+    # 設定
+    info_txt = ', '.join(info)
+    response = openai.ChatCompletion.create(
+      model="gpt-3.5-turbo",
+      messages=[
+            {"role": "system", "content": "下記のリストはある1つのバーコードから取得した商品名のリストデータです。セット商品等があるため複数の表現方法がなされています。このリストから共通性を見出し、メーカー名、商品名をただ一つのみ抽出してください。応答は辞書型で「メーカー名」と「商品名」をキーとし、抽出したものを値としてください。補足情報や説明は不要です。"},
+            {"role": "user", "content": info_txt}
+        ]
+    )
+    # ChatGPTの回答を出力
+    res = response["choices"][0]["message"]["content"]
+    res = res.replace( '\n' , '' )
+    res = json.loads(res)
+    return res
+
+###################################################################
+# スプシの参照
+###################################################################
+def read_DB():
+    # 決まり文句
+    scope = ['https://www.googleapis.com/auth/spreadsheets','https://www.googleapis.com/auth/drive']
+    # ダウンロードしたjsonファイル名をクレデンシャル変数に設定。
+    credentials = Credentials.from_service_account_file("stokify-391613-cfe2b43a3751.json", scopes=scope)
+    # OAuth2の資格情報を使用してGoogle APIにログイン。
+    gc = gspread.authorize(credentials)
+    # スプレッドシートIDを変数に格納する。
+    SPREADSHEET_KEY = '1d6Sdymm4r2d70N5t2f_u1RxCiDJ6Tm7s0TasKllXOTU'
+    # スプレッドシート（ブック）を開く
+    workbook = gc.open_by_key(SPREADSHEET_KEY)
+    return workbook
+
+######################################################################
+# DB上からバーコードデータ検索
+######################################################################
+def search_DB(barcode, id ):
+    # スプレッドシートを開く関数を呼び出し
+    workbook = read_DB()
+    # シートの一覧を取得する。（リスト形式）
+    worksheets = workbook.worksheets()
+    # StockifyDBのシートを開く（商品一覧DB的扱い）
+    worksheet = workbook.worksheet('UserDB')
+
+    # B列の値をすべて取得
+    barcode_list = worksheet.col_values(2)
+    # B列に対応するバーコードデータがあるかどうかを検索
+    if barcode in barcode_list:
+        # 対応するB列の値を取得
+        row_index = barcode_list.index(barcode) + 1  # 行番号は1から始まるので+1する
+        maker = worksheet.cell(row_index, 3).value
+        name = worksheet.cell(row_index, 4).value
+        return maker,name
+    else:
+        # バーコードから商品を検索する関数を呼び出してinfoに保存
+        info = barcode_search(barcode)
+        #商品名を一意に決める関数を呼び出して、infoを渡して、resに保存
+        res = list_to_name(info)
+        maker = res['メーカー名']
+        name =  res['商品名']
+        # シートのすべての値を取得
+        all_values = worksheet.get_all_values()
+        # 最終行を取得
+        last_row = len(all_values)
+        
+        # ここから新たに取得した商品データをスプレッドシートに記述
+        ##################################################################
+        # A列にIDを付与する
+        worksheet.update_cell(last_row + 1, 1, id)
+        # B列にBarcodeを記録する
+        worksheet.update_cell(last_row + 1, 2, barcode)
+        # B列にBarcodeを記録する
+        worksheet.update_cell(last_row + 1, 3, maker)
+        # B列にBarcodeを記録する
+        worksheet.update_cell(last_row + 1, 4, name)
+        ##################################################################
+        return maker,name
+    
+def get_user_inventory(user_id):
+    workbook = read_DB()
+    worksheet = workbook.worksheet('UserDB')
+    
+    # ID列の値をすべて取得
+    id_list = worksheet.col_values(1)
+    
+    # 対応するIDが存在する行の商品名を取得
+    items = []
+    for i, id_value in enumerate(id_list):
+        if id_value == user_id:
+            row_index = i + 1  # 行番号は1から始まるので+1する
+            item_name = worksheet.cell(row_index, 4).value
+            items.append(item_name)
+    
+    return "\n".join(items)
+
+# テキストメッセージのハンドリング
+def handle_text_message(event):
+    text = event["message"]["text"]
+
+    # ユーザーが「ざいことうろく」を入力した場合
+    if text == "ざいことうろく":
+        reply_message = "最初に、商品のバーコード写真を投稿するか カメラを撮影してください!"
+
+         # ユーザーが「ざいこかくにん」を入力した場合
+    elif text == "ざいこかくにん":
+        # ユーザーIDの取得
+        user_id = event["source"]["userId"]
+        # ユーザーの在庫リストを取得
+        user_inventory = get_user_inventory(user_id)
+        reply_message = "こちらがあなたの在庫リストです:\n" + user_inventory
+
+    # ユーザーが「かいものリスト」を入力した場合
+    elif text == "かいものリスト":
+        reply_message = "あなたのかいものリストはこちらです!"
+
+    # その他のテキストメッセージにはそのまま応答します
+    else:
+        # ユーザーIDの取得
+        user_id = event["source"]["userId"]
+        reply_message = "User ID: " + user_id + "\nMessage: " + text
+
+    # 応答メッセージを送る
+    line_bot_api.reply_message(
+        event["replyToken"],
+        TextSendMessage(text=reply_message))
+    
 
 # /callbackへのPOSTリクエストを処理するルートを定義
 @app.post("/callback/")
@@ -109,11 +249,11 @@ async def callback(webhook_data: LineWebhook):
 
                 if barcode_number:
                     # バーコードが正常に読み取れた場合、その番号から商品を検索　if the barcode is successfully read, then search the product
-                    product_info = barcode_search(barcode_number)
+                    maker, name = search_DB(barcode_number, user_id )
                     # 商品情報をリプライとして送る：reply the found product info
                     line_bot_api.reply_message(
                         event["replyToken"],
-                        TextSendMessage(text=str(product_info)))
+                        TextSendMessage(text="メーカー名:"+str(maker) + "\n商品名:" + str(name)))
                 
                 else:
                     # # バーコードが読み取れなかった場合、エラーメッセージをリプライとして送る　if the barcode is not found or not readable, then reply an error message
@@ -123,37 +263,11 @@ async def callback(webhook_data: LineWebhook):
                 
 
             elif event["message"]["type"] == "text":
-                text = event["message"]["text"]
-                
-                # ユーザーが「ざいことうろく」を入力した場合
-                if text == "ざいことうろく":
-                    line_bot_api.reply_message(
-                        event["replyToken"],
-                        TextSendMessage(text="最初に、商品のバーコード写真を投稿するか カメラを撮影してください"))
-
-                # ユーザーが「ざいこかくにん」を入力した場合
-                elif text == "ざいこかくにん":
-                    line_bot_api.reply_message(
-                        event["replyToken"],
-                        TextSendMessage(text="こちらがのざいこリストはこちらです"))
-                
-                # ユーザーが「かいものリスト」を入力した場合
-                elif text == "かいものリスト":
-                    line_bot_api.reply_message(
-                        event["replyToken"],
-                        TextSendMessage(text="あなたのかいものリストはこちらです"))
-
-                # その他のテキストメッセージにはそのまま応答します
-                else:
-                    # ユーザーIDの取得
-                    user_id = event["source"]["userId"]
-                    line_bot_api.reply_message(
-                        event["replyToken"],
-                        TextSendMessage(text="User ID: " + user_id + "\nMessage: " + event["message"]["text"]))
-             
+                #text = event["message"]["text"]
+                handle_text_message(event)
    
     return {"status": "OK"}
 
 #if __name__ == "__main__":
 #    import uvicorn
-#    uvicorn.run(app, host="127.0.0.1", port=8000)
+#    uvicorn.run(app, host="127.0.
