@@ -28,6 +28,8 @@ line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 # WebhookからのPOSTデータの構造を定義
+# WebhookからのPOSTデータの構造を定義します。LINEからのWebhookは一連のイベントを含んでいます。
+# これらのイベントは、ユーザーからのメッセージ、ユーザーが友達になった通知、など様々なものがあります。
 class LineWebhook(BaseModel):
     destination: str
     events: List[dict]
@@ -83,12 +85,42 @@ def barcode_search(code):
     else:
         err_msg = "バーコードから商品が見つかりませんでした。"
         return err_msg
+    
+# テキストメッセージのハンドリング
+def handle_text_message(event):
+    text = event["message"]["text"]
+
+    # ユーザーが「ざいことうろく」を入力した場合
+    if text == "ざいことうろく":
+        reply_message = "最初に、商品のバーコード写真を投稿するか カメラを撮影してください"
+
+    # ユーザーが「ざいこかくにん」を入力した場合
+    elif text == "ざいこかくにん":
+        reply_message = "こちらがのざいこリストはこちらです"
+
+    # ユーザーが「かいものリスト」を入力した場合
+    elif text == "かいものリスト":
+        reply_message = "あなたのかいものリストはこちらです"
+
+    # その他のテキストメッセージにはそのまま応答します
+    else:
+        # ユーザーIDの取得
+        user_id = event["source"]["userId"]
+        reply_message = "User ID: " + user_id + "\nMessage: " + text
+
+    # 応答メッセージを送る
+    line_bot_api.reply_message(
+        event["replyToken"],
+        TextSendMessage(text=reply_message)
+    )
 
 # /callbackへのPOSTリクエストを処理するルートを定義
 @app.post("/callback/")
 async def callback(webhook_data: LineWebhook):
     for event in webhook_data.events:
         if event["type"] == "message":
+
+            # LINEサーバーから画像データをダウンロード
             if event["message"]["type"] == "image":
                 # LINEサーバーから画像データをダウンロード：download image data from line server
                 message_content = line_bot_api.get_message_content(event["message"]["id"])
@@ -99,6 +131,10 @@ async def callback(webhook_data: LineWebhook):
                 image_temp.close()
                 # # 画像からバーコードを読み取る：read the barcode from the image
                 barcode_number = read_barcode(image_temp.name)
+
+                # ユーザーIDの取得
+                user_id = event["source"]["userId"]
+
                 if barcode_number:
                     # バーコードが正常に読み取れた場合、その番号から商品を検索　if the barcode is successfully read, then search the product
                     product_info = barcode_search(barcode_number)
@@ -106,18 +142,16 @@ async def callback(webhook_data: LineWebhook):
                     line_bot_api.reply_message(
                         event["replyToken"],
                         TextSendMessage(text=str(product_info)))
+                
                 else:
                     # # バーコードが読み取れなかった場合、エラーメッセージをリプライとして送る　if the barcode is not found or not readable, then reply an error message
                     line_bot_api.reply_message(
                         event["replyToken"],
                         TextSendMessage(text="バーコードを読み取ることができませんでした。"))
+                
+
             elif event["message"]["type"] == "text":
-                line_bot_api.reply_message(
-                    event["replyToken"],
-                    TextSendMessage(text=event["message"]["text"]))
+                handle_text_message(event)
+                
+   
     return {"status": "OK"}
-
-
-#if __name__ == "__main__":
-#    import uvicorn
-#    uvicorn.run(app, host="127.0.0.1", port=8000)
